@@ -64,8 +64,20 @@ fn exec() -> Result<(), anyhow::Error> {
             );
             cmd.kill(&s)?;
             println!("Killed process {cmd:?}");
+            repo.set_delete(&cmd)?;
         } else {
-            unimplemented!("not implemented");
+            let out = repo.list_with(s.as_str())?;
+            let s = System::new_with_specifics(
+                RefreshKind::new().with_processes(ProcessRefreshKind::new()),
+            );
+            for o in out {
+                // try killing everything first and then deleting db
+                let res = o.kill(&s);
+                if res.is_err() {
+                    println!("Couldn't kill process {o:?}");
+                }
+                repo.set_delete(&o)?;
+            }
         }
         return Ok(());
     }

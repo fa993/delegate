@@ -8,7 +8,7 @@ use std::{
 use anyhow::anyhow;
 use home::home_dir;
 use prettytable::{row, Row};
-use rusqlite::{Connection, Result};
+use rusqlite::Connection;
 use sysinfo::{Pid, System};
 use tempfile::NamedTempFile;
 
@@ -115,6 +115,29 @@ impl Repository {
         return Ok(out);
     }
 
+    pub fn list_with(&self, starts_with: &str) -> Result<Vec<DelegateCommand>, anyhow::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pid, command, stdout_path, stdin_path, stderr_path FROM delegate_command where ongoing=1 AND command LIKE ?1 || '%'",
+        )?;
+        let cmd_iter = stmt.query_map([starts_with], |row| {
+            Ok(DelegateCommand {
+                pid: row.get(0)?,
+                command: row.get(1)?,
+                stdout_path: row.get(2)?,
+                stdin_path: row.get(3)?,
+                stderr_path: row.get(4)?,
+            })
+        })?;
+
+        let mut out = Vec::new();
+
+        for cmd in cmd_iter {
+            out.push(cmd?);
+        }
+
+        return Ok(out);
+    }
+
     pub fn delete(self) -> Result<(), anyhow::Error> {
         let home_dir = home_dir().ok_or(anyhow!("Couldn't get home dir"))?;
         let path = home_dir.join(PATH);
@@ -147,6 +170,14 @@ impl Repository {
         }
 
         return Ok(out.pop().unwrap());
+    }
+
+    pub fn set_delete(&self, pr: &DelegateCommand) -> Result<(), anyhow::Error> {
+        self.conn.execute(
+            "UPDATE delegate_command SET ongoing=0 where pid=?1",
+            [pr.pid],
+        )?;
+        Ok(())
     }
 }
 
