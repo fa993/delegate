@@ -14,6 +14,7 @@ anyhow = "1.0.86"
 clap = { version = "4.5.7", features = ["derive"] }
 home = "0.5.9"
 prettytable-rs = "0.10.0"
+rand = "0.8.5"
 rusqlite = "0.31.0"
 sysinfo = "0.30.12"
 tempfile = "3.10.1"

@@ -25,7 +25,8 @@ fn exec() -> Result<(), anyhow::Error> {
                 "COMMAND",
                 "STD_OUT_PATH",
                 "STD_IN_PATH",
-                "STD_ERR_PATH"
+                "STD_ERR_PATH",
+                "GROUP"
             ]);
             for o in out {
                 table.add_row(o.to_table_row());
@@ -49,6 +50,29 @@ fn exec() -> Result<(), anyhow::Error> {
             println!("Erased all traces of delegate");
             return Ok(());
         }
+        Some(SubCommand::Restart { group }) => {
+            let out = if let Some(g_num) = group {
+                repo.list_with_group(*g_num)?
+            } else {
+                repo.list()?
+            };
+            let s = System::new_with_specifics(
+                RefreshKind::new().with_processes(ProcessRefreshKind::new()),
+            );
+            for o in &out {
+                // try killing everything first
+                let res = o.kill(&s);
+                if res.is_err() {
+                    println!("Couldn't kill process {o:?}");
+                }
+                repo.set_delete(o)?;
+            }
+            for o in out {
+                let new_cmd = o.clone_spawn()?;
+                repo.insert(&new_cmd)?;
+            }
+            return Ok(());
+        }
         None => {}
     }
 
@@ -58,15 +82,24 @@ fn exec() -> Result<(), anyhow::Error> {
         // check if string is num, if it is eliminate by pid otherwise eliminate by first word of command
         let num_test = s.parse::<usize>();
         if let Ok(num) = num_test {
-            let cmd = repo.get_by_pid(num)?;
+            let cmd = repo.get_by_pid(num);
             let s = System::new_with_specifics(
                 RefreshKind::new().with_processes(ProcessRefreshKind::new()),
             );
-            cmd.kill(&s)?;
-            println!("Killed process {cmd:?}");
-            repo.set_delete(&cmd)?;
+            if let Ok(d_cmd) = cmd {
+                d_cmd.kill(&s)?;
+                println!("Killed process {d_cmd:?}");
+                repo.set_delete(&d_cmd)?;
+            } else {
+                let d_cmds = repo.list_with_group(num)?;
+                for d_cmd in d_cmds {
+                    d_cmd.kill(&s)?;
+                    println!("Killed process {d_cmd:?}");
+                    repo.set_delete(&d_cmd)?;
+                }
+            }
         } else {
-            let out = repo.list_with(s.as_str())?;
+            let out = repo.list_with_name(s.as_str())?;
             let s = System::new_with_specifics(
                 RefreshKind::new().with_processes(ProcessRefreshKind::new()),
             );
@@ -85,7 +118,8 @@ fn exec() -> Result<(), anyhow::Error> {
     if cli_args.delegate.is_empty() {
         return Err(anyhow!("no command to delegate"));
     }
-    let cmd = DelegateCommand::spawn(cli_args.delegate.join(" "))?;
+
+    let cmd = DelegateCommand::spawn(cli_args.delegate.join(" "), cli_args.group)?;
     repo.insert(&cmd)?;
     println!("Successfully started");
 

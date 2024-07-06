@@ -7,6 +7,10 @@ pub struct CLIArgs {
     #[arg(short, long, value_name = "PID")]
     pub(crate) kill: Option<String>,
 
+    /// Associates a delegate with a group
+    #[arg(short, long, value_name = "GROUP_NUMBER")]
+    pub(crate) group: Option<usize>,
+
     /// subcommands
     #[command(subcommand)]
     pub(crate) subcommand: Option<SubCommand>,
@@ -22,4 +26,10 @@ pub enum SubCommand {
 
     /// kills executions if any and deletes everything
     Reset,
+
+    /// restarts a group of commands
+    Restart {
+        #[arg(short, long, value_name = "GROUP_NUMBER")]
+        group: Option<usize>,
+    },
 }

@@ -7,8 +7,8 @@ use std::{
 
 use anyhow::anyhow;
 use home::home_dir;
-use prettytable::{row, Row};
-use rusqlite::Connection;
+use prettytable::row;
+use rusqlite::{Connection, Row};
 use sysinfo::{Pid, System};
 use tempfile::NamedTempFile;
 
@@ -21,10 +21,25 @@ pub struct DelegateCommand {
     stdout_path: String,
     stdin_path: String,
     stderr_path: String,
+    group: Option<usize>,
+}
+
+impl<'a> TryFrom<&'a Row<'a>> for DelegateCommand {
+    type Error = rusqlite::Error;
+    fn try_from(row: &'a Row<'a>) -> Result<Self, Self::Error> {
+        Ok(DelegateCommand {
+            pid: row.get("pid")?,
+            command: row.get("command")?,
+            stdout_path: row.get("stdout_path")?,
+            stdin_path: row.get("stdin_path")?,
+            stderr_path: row.get("stderr_path")?,
+            group: row.get("group_num").ok(),
+        })
+    }
 }
 
 impl DelegateCommand {
-    pub fn spawn(cmd: String) -> Result<DelegateCommand, anyhow::Error> {
+    pub fn spawn(cmd: String, group: Option<usize>) -> Result<DelegateCommand, anyhow::Error> {
         let out_file = NamedTempFile::new()?;
         let (o_file, o_path) = out_file.keep()?;
 
@@ -48,6 +63,7 @@ impl DelegateCommand {
             stdout_path: o_path.to_string_lossy().to_string(),
             stdin_path: i_path.to_string_lossy().to_string(),
             stderr_path: e_path.to_string_lossy().to_string(),
+            group,
         })
     }
 }
@@ -70,7 +86,8 @@ impl Repository {
             stdout_path TEXT NOT NULL,
             stdin_path TEXT NOT NULL,
             stderr_path TEXT NOT NULL,
-            ongoing INTEGER DEFAULT (1) NOT NULL
+            ongoing INTEGER DEFAULT (1) NOT NULL,
+            group_num INTEGER
         )",
             (), // empty list of parameters.
         )?;
@@ -80,31 +97,24 @@ impl Repository {
 
     pub fn insert(&self, cmd: &DelegateCommand) -> Result<usize, anyhow::Error> {
         let result = self.conn.execute(
-            "INSERT INTO delegate_command (pid, command, stdout_path, stdin_path, stderr_path) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO delegate_command (pid, command, stdout_path, stdin_path, stderr_path, group_num) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             (
                 cmd.pid,
                 cmd.command.as_str(),
                 cmd.stdout_path.as_str(),
                 cmd.stdin_path.as_str(),
-                cmd.stderr_path.as_str()
+                cmd.stderr_path.as_str(),
+                cmd.group
             ),
         )?;
         Ok(result)
     }
 
     pub fn list(&self) -> Result<Vec<DelegateCommand>, anyhow::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT pid, command, stdout_path, stdin_path, stderr_path FROM delegate_command where ongoing=1",
-        )?;
-        let cmd_iter = stmt.query_map([], |row| {
-            Ok(DelegateCommand {
-                pid: row.get(0)?,
-                command: row.get(1)?,
-                stdout_path: row.get(2)?,
-                stdin_path: row.get(3)?,
-                stderr_path: row.get(4)?,
-            })
-        })?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM delegate_command where ongoing=1")?;
+        let cmd_iter = stmt.query_map([], |f| DelegateCommand::try_from(f))?;
 
         let mut out = Vec::new();
 
@@ -115,19 +125,26 @@ impl Repository {
         return Ok(out);
     }
 
-    pub fn list_with(&self, starts_with: &str) -> Result<Vec<DelegateCommand>, anyhow::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT pid, command, stdout_path, stdin_path, stderr_path FROM delegate_command where ongoing=1 AND command LIKE ?1 || '%'",
-        )?;
-        let cmd_iter = stmt.query_map([starts_with], |row| {
-            Ok(DelegateCommand {
-                pid: row.get(0)?,
-                command: row.get(1)?,
-                stdout_path: row.get(2)?,
-                stdin_path: row.get(3)?,
-                stderr_path: row.get(4)?,
-            })
-        })?;
+    pub fn list_with_name(&self, starts_with: &str) -> Result<Vec<DelegateCommand>, anyhow::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM delegate_command where ongoing=1 AND command LIKE ?1 || '%'")?;
+        let cmd_iter = stmt.query_map([starts_with], |f| DelegateCommand::try_from(f))?;
+
+        let mut out = Vec::new();
+
+        for cmd in cmd_iter {
+            out.push(cmd?);
+        }
+
+        return Ok(out);
+    }
+
+    pub fn list_with_group(&self, group: usize) -> Result<Vec<DelegateCommand>, anyhow::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM delegate_command where group_num=?1")?;
+        let cmd_iter = stmt.query_map([group], |f| DelegateCommand::try_from(f))?;
 
         let mut out = Vec::new();
 
@@ -146,18 +163,10 @@ impl Repository {
     }
 
     pub fn get_by_pid(&self, pid: usize) -> Result<DelegateCommand, anyhow::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT pid, command, stdout_path, stdin_path, stderr_path FROM delegate_command where ongoing=1 and pid=?1",
-        )?;
-        let cmd_iter = stmt.query_map([pid], |row| {
-            Ok(DelegateCommand {
-                pid: row.get(0)?,
-                command: row.get(1)?,
-                stdout_path: row.get(2)?,
-                stdin_path: row.get(3)?,
-                stderr_path: row.get(4)?,
-            })
-        })?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM delegate_command where ongoing=1 and pid=?1")?;
+        let cmd_iter = stmt.query_map([pid], |f| DelegateCommand::try_from(f))?;
 
         let mut out = Vec::new();
 
@@ -167,9 +176,11 @@ impl Repository {
 
         if out.len() > 1 {
             return Err(anyhow!("More than 1 ongoing process for 1 PID"));
+        } else if out.len() == 0 {
+            return Err(anyhow!("No PIDs for process found"));
+        } else {
+            return Ok(out.pop().unwrap());
         }
-
-        return Ok(out.pop().unwrap());
     }
 
     pub fn set_delete(&self, pr: &DelegateCommand) -> Result<(), anyhow::Error> {
@@ -182,13 +193,14 @@ impl Repository {
 }
 
 impl DelegateCommand {
-    pub fn to_table_row(&self) -> Row {
+    pub fn to_table_row(&self) -> prettytable::Row {
         return row![
             self.pid.to_string(),
             self.command.to_string(),
             self.stdout_path.to_string(),
             self.stdin_path.to_string(),
             self.stderr_path.to_string(),
+            self.group.map_or(format!("NULL"), |f| f.to_string()),
         ];
     }
 
@@ -198,5 +210,9 @@ impl DelegateCommand {
             .ok_or(anyhow!("process with PID not found"))?;
         process.kill();
         return Ok(());
+    }
+
+    pub fn clone_spawn(self) -> Result<DelegateCommand, anyhow::Error> {
+        return Self::spawn(self.command, self.group);
     }
 }
